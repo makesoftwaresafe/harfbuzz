@@ -30,7 +30,6 @@
 
 #include "hb.hh"
 #include "hb-bit-page.hh"
-#include "hb-machinery.hh"
 
 
 struct hb_bit_set_t
@@ -39,10 +38,10 @@ struct hb_bit_set_t
   ~hb_bit_set_t () = default;
 
   hb_bit_set_t (const hb_bit_set_t& other) : hb_bit_set_t () { set (other, true); }
-  hb_bit_set_t ( hb_bit_set_t&& other) : hb_bit_set_t () { hb_swap (*this, other); }
+  hb_bit_set_t ( hb_bit_set_t&& other)  noexcept : hb_bit_set_t () { hb_swap (*this, other); }
   hb_bit_set_t& operator= (const hb_bit_set_t& other) { set (other); return *this; }
-  hb_bit_set_t& operator= (hb_bit_set_t&& other) { hb_swap (*this, other); return *this; }
-  friend void swap (hb_bit_set_t &a, hb_bit_set_t &b)
+  hb_bit_set_t& operator= (hb_bit_set_t&& other)  noexcept { hb_swap (*this, other); return *this; }
+  friend void swap (hb_bit_set_t &a, hb_bit_set_t &b) noexcept
   {
     if (likely (!a.successful || !b.successful))
       return;
@@ -181,6 +180,16 @@ struct hb_bit_set_t
       page->add_range (major_start (mb), b);
     }
     return true;
+  }
+
+  /* Duplicated here from hb-machinery.hh to avoid including it. */
+  template<typename Type>
+  static inline const Type& StructAtOffsetUnaligned(const void *P, unsigned int offset)
+  {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+    return * reinterpret_cast<const Type*> ((const char *) P + offset);
+#pragma GCC diagnostic pop
   }
 
   template <typename T>
@@ -904,7 +913,7 @@ struct hb_bit_set_t
 
     /* The extra page_map length is necessary; can't just rely on vector here,
      * since the next check would be tricked because a null page also has
-     * major==0, which we can't distinguish from an actualy major==0 page... */
+     * major==0, which we can't distinguish from an actually major==0 page... */
     unsigned i = last_page_lookup;
     if (likely (i < page_map.length))
     {
@@ -938,7 +947,7 @@ struct hb_bit_set_t
 
     /* The extra page_map length is necessary; can't just rely on vector here,
      * since the next check would be tricked because a null page also has
-     * major==0, which we can't distinguish from an actualy major==0 page... */
+     * major==0, which we can't distinguish from an actually major==0 page... */
     unsigned i = last_page_lookup;
     if (likely (i < page_map.length))
     {
