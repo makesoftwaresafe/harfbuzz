@@ -42,10 +42,11 @@
  * priority of its children. The heap is stored in an array, with the
  * children of node i stored at indices 2i + 1 and 2i + 2.
  */
+template <typename K>
 struct hb_priority_queue_t
 {
  private:
-  typedef hb_pair_t<int64_t, unsigned> item_t;
+  typedef hb_pair_t<K, unsigned> item_t;
   hb_vector_t<item_t> heap;
 
  public:
@@ -54,13 +55,22 @@ struct hb_priority_queue_t
 
   bool in_error () const { return heap.in_error (); }
 
-  void insert (int64_t priority, unsigned value)
+  bool alloc (unsigned size)
+  { return heap.alloc (size); }
+
+#ifndef HB_OPTIMIZE_SIZE
+  HB_ALWAYS_INLINE
+#endif
+  void insert (K priority, unsigned value)
   {
     heap.push (item_t (priority, value));
     if (unlikely (heap.in_error ())) return;
     bubble_up (heap.length - 1);
   }
 
+#ifndef HB_OPTIMIZE_SIZE
+  HB_ALWAYS_INLINE
+#endif
   item_t pop_minimum ()
   {
     assert (!is_empty ());
@@ -106,6 +116,7 @@ struct hb_priority_queue_t
     return 2 * index + 2;
   }
 
+  HB_ALWAYS_INLINE
   void bubble_down (unsigned index)
   {
     repeat:
@@ -135,6 +146,7 @@ struct hb_priority_queue_t
     goto repeat;
   }
 
+  HB_ALWAYS_INLINE
   void bubble_up (unsigned index)
   {
     repeat:
@@ -151,7 +163,7 @@ struct hb_priority_queue_t
     goto repeat;
   }
 
-  void swap (unsigned a, unsigned b)
+  void swap (unsigned a, unsigned b) noexcept
   {
     assert (a < heap.length);
     assert (b < heap.length);

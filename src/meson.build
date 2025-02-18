@@ -1,3 +1,5 @@
+fs = import('fs')
+
 hb_version_h = configure_file(
                command: [find_program('gen-hb-version.py'), meson.project_version(), '@OUTPUT@', '@INPUT@'],
                input: 'hb-version.h.in',
@@ -44,6 +46,7 @@ hb_base_sources = files(
   'hb-dispatch.hh',
   'hb-draw.cc',
   'hb-draw.hh',
+  'hb-geometry.hh',
   'hb-paint.cc',
   'hb-paint.hh',
   'hb-paint-extents.cc',
@@ -171,6 +174,9 @@ hb_base_sources = files(
   'OT/Layout/GSUB/SubstLookup.hh',
   'OT/Layout/GSUB/SubstLookupSubTable.hh',
   'OT/name/name.hh',
+  'OT/Var/VARC/coord-setter.hh',
+  'OT/Var/VARC/VARC.cc',
+  'OT/Var/VARC/VARC.hh',
   'hb-ot-layout-gsubgpos.hh',
   'hb-ot-layout-jstf-table.hh',
   'hb-ot-layout.cc',
@@ -231,6 +237,7 @@ hb_base_sources = files(
   'hb-ot-var-gvar-table.hh',
   'hb-ot-var-hvar-table.hh',
   'hb-ot-var-mvar-table.hh',
+  'hb-ot-var-varc-table.hh',
   'hb-ot-var.cc',
   'hb-ot-vorg-table.hh',
   'hb-pool.hh',
@@ -339,7 +346,7 @@ hb_wasm_headers = files()
 
 # System-dependent sources and headers
 
-hb_coretext_sources = files('hb-coretext.cc')
+hb_coretext_sources = files('hb-coretext-shape.cc', 'hb-coretext-font.cc')
 hb_coretext_headers = files('hb-coretext.h')
 
 hb_directwrite_sources = files('hb-directwrite.cc')
@@ -369,12 +376,14 @@ hb_subset_sources = files(
   'hb-subset-cff2.cc',
   'hb-subset-input.cc',
   'hb-subset-input.hh',
+  'hb-subset-instancer-iup.hh',
+  'hb-subset-instancer-iup.cc',
   'hb-subset-instancer-solver.hh',
   'hb-subset-instancer-solver.cc',
   'hb-subset-plan.cc',
   'hb-subset-plan.hh',
   'hb-subset-plan-member-list.hh',
-  'hb-subset-repacker.cc',
+  'hb-subset-serialize.cc',
   'graph/gsubgpos-context.cc',
   'graph/gsubgpos-context.hh',
   'graph/gsubgpos-graph.hh',
@@ -389,7 +398,7 @@ hb_subset_sources = files(
 
 hb_subset_headers = files(
   'hb-subset.h',
-  'hb-subset-repacker.h'
+  'hb-subset-serialize.h'
 )
 
 hb_gobject_sources = files(
@@ -441,7 +450,13 @@ hb_headers = hb_base_headers
 
 harfbuzz_deps = [thread_dep, m_dep] + harfbuzz_extra_deps
 
-libharfbuzz_link_language = 'c'
+if get_option('with_libstdcxx')
+  chosen_linker = 'cpp'
+else
+  # Use a C linker, not C++; Don't link to libstdc++
+  chosen_linker = 'c'
+endif
+libharfbuzz_link_language = chosen_linker
 
 if conf.get('HAVE_FREETYPE', 0) == 1
   hb_sources += hb_ft_sources
@@ -542,8 +557,8 @@ hb_supported_features_h = configure_file(input: 'hb-features.h.in',
                                configuration: hb_supported_features,
                                install: false)
 
-# Base and default-included sources and headers
 
+# Base and default-included sources and headers
 gen_def = find_program('gen-def.py')
 gen_def_cmd = [gen_def, '@OUTPUT@', '@INPUT@']
 if get_option('experimental_api')
@@ -560,7 +575,7 @@ defs_list = [harfbuzz_def]
 version = '0.@0@.0'.format(hb_version_int)
 
 extra_hb_cpp_args = []
-if cpp.get_argument_syntax() == 'msvc'
+if cpp.get_define('_MSC_FULL_VER') != ''
   if get_option('default_library') != 'static'
     extra_hb_cpp_args += '-DHB_DLL_EXPORT'
   endif
@@ -612,7 +627,7 @@ libharfbuzz_subset = library('harfbuzz-subset', hb_subset_sources,
   version: version,
   install: true,
   darwin_versions: darwin_versions,
-  link_language: 'c',
+  link_language: chosen_linker,
 )
 
 custom_target('harfbuzz-subset.cc',
@@ -652,7 +667,7 @@ if conf.get('HAVE_CAIRO', 0) == 1
     version: version,
     install: true,
     darwin_versions: darwin_versions,
-    link_language: 'c',
+    link_language: chosen_linker,
   )
 
   install_headers(hb_cairo_headers, subdir: meson.project_name())
@@ -678,9 +693,10 @@ if conf.get('HAVE_CAIRO', 0) == 1
 endif
 
 if get_option('tests').enabled()
-  # TODO: MSVC gives the following,
+  # TODO: Microsoft LINK gives the following because extern, non dllexport
+  # symbols can only be used when linking against a static library
   # error LNK2019: unresolved external symbol "unsigned __int64 const * const _hb_NullPool"
-  if cpp.get_argument_syntax() != 'msvc'
+  if cpp.get_define('_MSC_FULL_VER') == ''
     noinst_programs = {
       'main': 'main.cc',
       'test-basics': 'test.cc',
@@ -696,7 +712,7 @@ if get_option('tests').enabled()
     foreach name, source : noinst_programs
       executable(name, source,
         include_directories: incconfig,
-        cpp_args: cpp_args,
+        cpp_args: cpp_args + ['-UNDEBUG'],
         dependencies: libharfbuzz_dep,
         install: false,
       )
@@ -706,26 +722,28 @@ if get_option('tests').enabled()
   compiled_tests = {
     'test-algs': ['test-algs.cc', 'hb-static.cc'],
     'test-array': ['test-array.cc'],
+    'test-bimap': ['test-bimap.cc', 'hb-static.cc'],
+    'test-cff': ['test-cff.cc', 'hb-static.cc'],
+    'test-classdef-graph': ['graph/test-classdef-graph.cc', 'hb-static.cc', 'graph/gsubgpos-context.cc'],
     'test-iter': ['test-iter.cc', 'hb-static.cc'],
     'test-machinery': ['test-machinery.cc', 'hb-static.cc'],
     'test-map': ['test-map.cc', 'hb-static.cc'],
     'test-multimap': ['test-multimap.cc', 'hb-static.cc'],
     'test-number': ['test-number.cc', 'hb-number.cc'],
     'test-ot-tag': ['hb-ot-tag.cc'],
-    'test-priority-queue': ['test-priority-queue.cc', 'hb-static.cc'],
-    'test-repacker': ['test-repacker.cc', 'hb-static.cc', 'graph/gsubgpos-context.cc'],
-    'test-classdef-graph': ['graph/test-classdef-graph.cc', 'hb-static.cc', 'graph/gsubgpos-context.cc'],
     'test-set': ['test-set.cc', 'hb-static.cc'],
     'test-serialize': ['test-serialize.cc', 'hb-static.cc'],
-    'test-unicode-ranges': ['test-unicode-ranges.cc'],
     'test-vector': ['test-vector.cc', 'hb-static.cc'],
-    'test-bimap': ['test-bimap.cc', 'hb-static.cc'],
+    'test-repacker': ['test-repacker.cc', 'hb-static.cc', 'graph/gsubgpos-context.cc'],
     'test-instancer-solver': ['test-subset-instancer-solver.cc', 'hb-subset-instancer-solver.cc', 'hb-static.cc'],
-    'test-tuple-varstore': ['test-tuple-varstore.cc', 'hb-subset-instancer-solver.cc', 'hb-static.cc'],
+    'test-priority-queue': ['test-priority-queue.cc', 'hb-static.cc'],
+    'test-tuple-varstore': ['test-tuple-varstore.cc', 'hb-subset-instancer-solver.cc', 'hb-subset-instancer-iup.cc', 'hb-static.cc'],
+    'test-item-varstore': ['test-item-varstore.cc', 'hb-subset-instancer-solver.cc', 'hb-subset-instancer-iup.cc', 'hb-static.cc'],
+    'test-unicode-ranges': ['test-unicode-ranges.cc'],
   }
   foreach name, source : compiled_tests
-    if cpp.get_argument_syntax() == 'msvc' and source.contains('hb-static.cc')
-      # TODO: MSVC doesn't like tests having hb-static.cc, fix them
+    if cpp.get_define('_MSC_FULL_VER') != '' and source.contains('hb-static.cc')
+      # TODO: Microsoft compilers cannot link tests using hb-static.cc, fix them
       continue
     endif
     test(name, executable(name, source,
@@ -768,7 +786,7 @@ if have_icu and not have_icu_builtin
     install: true,
     darwin_versions: darwin_versions,
     # ICU links to stdc++ anyway so the default linker is good
-    # link_language: 'c',
+    # link_language: chosen_linker,
   )
 
   libharfbuzz_icu_dep = declare_dependency(
@@ -789,15 +807,96 @@ endif
 
 have_gobject = conf.get('HAVE_GOBJECT', 0) == 1
 
+# This code (especially PACKAGE_INIT) kept similar to what CMake's own
+# configure_package_config_file() generates, see
+# https://cmake.org/cmake/help/latest/module/CMakePackageConfigHelpers.html#command:configure_package_config_file
+
 cmake_config = configuration_data()
-cmake_config.set('libdir', get_option('prefix') / get_option('libdir'))
-cmake_config.set('includedir', get_option('prefix') / get_option('includedir'))
-cmake_config.set('HB_LIBTOOL_VERSION_INFO', hb_libtool_version_info)
-cmake_config.set('have_gobject', '@0@'.format(have_gobject))
+cmake_config_dir = cmake_package_install_dir / 'harfbuzz'
+
+have_fs_relative_to = meson.version().version_compare('>=1.3.0')
+
+if not have_fs_relative_to
+  relative_to = find_program('relative_to.py')
+endif
+
+if have_fs_relative_to
+  cmake_package_prefix_dir = fs.relative_to(get_option('prefix'), get_option('prefix') / cmake_config_dir)
+else
+  cmake_package_prefix_dir = run_command(relative_to, get_option('prefix'), get_option('prefix') / cmake_config_dir, check: true).stdout().strip()
+endif
+
+cmake_package_prefix_dir = '${CMAKE_CURRENT_LIST_DIR}/@0@'.format(cmake_package_prefix_dir)
+
+# Make all the relevant paths relative to our prefix, so we can later append
+# them onto ${PACKAGE_PREFIX_DIR} to get the correct paths.
+
+cmake_install_includedir = get_option('includedir')
+
+if fs.is_absolute(cmake_install_includedir)
+  if have_fs_relative_to
+    cmake_install_includedir = fs.relative_to(cmake_install_includedir, get_option('prefix'))
+  else
+    cmake_install_includedir = run_command(relative_to, cmake_install_includedir, get_option('prefix'), check: true).stdout().strip()
+  endif
+endif
+
+cmake_install_libdir = get_option('libdir')
+
+if fs.is_absolute(cmake_install_libdir)
+  if have_fs_relative_to
+    cmake_install_libdir = fs.relative_to(cmake_install_libdir, get_option('prefix'))
+  else
+    cmake_install_libdir = run_command(relative_to, cmake_install_libdir, get_option('prefix'), check: true).stdout().strip()
+  endif
+endif
+
+cmake_config.set('PACKAGE_INIT', '''
+get_filename_component(PACKAGE_PREFIX_DIR "@0@" ABSOLUTE)
+
+macro(set_and_check _var _file)
+  set(${_var} "${_file}")
+  if(NOT EXISTS "${_file}")
+    message(FATAL_ERROR "File or directory ${_file} referenced by variable ${_var} does not exist !")
+  endif()
+endmacro()
+
+macro(check_required_components _NAME)
+  foreach(comp ${${_NAME}_FIND_COMPONENTS})
+    if(NOT ${_NAME}_${comp}_FOUND)
+      if(${_NAME}_FIND_REQUIRED_${comp})
+        set(${_NAME}_FOUND FALSE)
+      endif()
+    endif()
+  endforeach()
+endmacro()
+'''.format(cmake_package_prefix_dir))
+
+cmake_config.set('PACKAGE_CMAKE_INSTALL_INCLUDEDIR', '${PACKAGE_PREFIX_DIR}/@0@'.format(cmake_install_includedir))
+cmake_config.set('PACKAGE_CMAKE_INSTALL_LIBDIR', '${PACKAGE_PREFIX_DIR}/@0@'.format(cmake_install_libdir))
+cmake_config.set('PACKAGE_INCLUDE_INSTALL_DIR', '${PACKAGE_PREFIX_DIR}/@0@/@1@'.format(cmake_install_includedir, meson.project_name()))
+cmake_config.set('HARFBUZZ_VERSION', meson.project_version())
+cmake_config.set('HB_HAVE_GOBJECT', have_gobject ? 'YES' : 'NO')
+cmake_config.set('HB_LIBRARY_TYPE', get_option('default_library') == 'static' ? 'STATIC' : 'SHARED')
+
+if get_option('default_library') == 'static'
+  cmake_config.set('HB_LIB_PREFIX', '${CMAKE_STATIC_LIBRARY_PREFIX}')
+  cmake_config.set('HB_LIB_SUFFIX', '${CMAKE_STATIC_LIBRARY_SUFFIX}')
+elif host_machine.system() == 'darwin'
+  cmake_config.set('HB_LIB_PREFIX', '${CMAKE_SHARED_LIBRARY_PREFIX}')
+  cmake_config.set('HB_LIB_SUFFIX', '.@0@${CMAKE_SHARED_LIBRARY_SUFFIX}'.format(hb_so_version))
+elif host_machine.system() == 'windows'
+  cmake_config.set('HB_LIB_PREFIX', '${CMAKE_IMPORT_LIBRARY_PREFIX}')
+  cmake_config.set('HB_LIB_SUFFIX', '${CMAKE_IMPORT_LIBRARY_SUFFIX}')
+else
+  cmake_config.set('HB_LIB_PREFIX', '${CMAKE_SHARED_LIBRARY_PREFIX}')
+  cmake_config.set('HB_LIB_SUFFIX', '${CMAKE_SHARED_LIBRARY_SUFFIX}.@0@'.format(version))
+endif
+
 configure_file(input: 'harfbuzz-config.cmake.in',
   output: 'harfbuzz-config.cmake',
   configuration: cmake_config,
-  install_dir: get_option('libdir') / 'cmake' / 'harfbuzz',
+  install_dir: cmake_config_dir,
 )
 
 gobject_enums_c = []
@@ -855,7 +954,7 @@ if have_gobject
     version: version,
     install: true,
     darwin_versions: darwin_versions,
-    link_language: 'c',
+    link_language: chosen_linker,
   )
 
   gir = find_program('g-ir-scanner', required: get_option('introspection'))
@@ -933,7 +1032,7 @@ if get_option('tests').enabled()
 
   if cpp.get_argument_syntax() != 'msvc' and not meson.is_cross_build() # ensure the local tools are usable
     dist_check_script += ['check-static-inits', 'check-symbols']
-    if get_option('wasm').disabled()
+    if get_option('wasm').disabled() and not get_option('with_libstdcxx')
       dist_check_script += ['check-libstdc++']
     endif
   endif
